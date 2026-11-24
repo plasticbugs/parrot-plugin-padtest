@@ -12,7 +12,7 @@ Pad Test 0.18 is the same test built with an older version of the USB code, Tiny
 
 ## Controls
 
-There are no controls on the ColecoVision controller. Plug a pad in and press its buttons. Press RESET on the console to go back to the menu.
+There are no controls on the ColecoVision controller. Plug a pad in and press its buttons. Press RESET on the console to go back to the menu, or hold both fire buttons and \* for 2 seconds (Select and Start on a USB pad).
 
 ## What the screen shows
 

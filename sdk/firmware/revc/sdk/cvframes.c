@@ -4,6 +4,7 @@
 // back to the menu are cvkernel.c's.
 #include "cvframes.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include "pico/multicore.h"
@@ -12,6 +13,7 @@
 #include "hardware/sync.h"
 #include "hardware/watchdog.h"
 
+#include "cvhome.h"
 #include "../sdplayer/perm.h"
 #include "../sdplayer/htrace.h"
 
@@ -29,15 +31,39 @@ static uint8_t fixed_ram[BANK] __attribute__((aligned(4)));     // the kernel
 static uint8_t handoff_ram[BANK] __attribute__((aligned(4)));   // handoff.asm, RST 0 past it, in both halves
 static uint8_t list_ram[2][BANK] __attribute__((aligned(4)));   // the lists, permuted
 
+#ifdef CVF_SERVE2
+// cvfserve.S's loop (cvplugin.cmake: cvframes_serve2()) and what it shares
+// with core 0, at the offsets it has for them
+typedef struct {
+    const uint8_t *volatile ready, *volatile taken;
+    volatile uint32_t frames;
+    volatile uint8_t rep[4];
+    const uint8_t *fixed;
+    uint32_t t_serve;
+    volatile uint32_t unsel, early, unhdr;
+} cvf_serve_t;
+_Static_assert(offsetof(cvf_serve_t, taken) == 4 && offsetof(cvf_serve_t, frames) == 8 && offsetof(cvf_serve_t, rep) == 12 &&
+               offsetof(cvf_serve_t, fixed) == 16 && offsetof(cvf_serve_t, t_serve) == 20 && offsetof(cvf_serve_t, unsel) == 24 &&
+               offsetof(cvf_serve_t, early) == 28 && offsetof(cvf_serve_t, unhdr) == 32, "cvfserve.S's offsets");
+static cvf_serve_t sv = {.rep = {0x0F, 0x03, 0x0F, 0}};
+void cvf_serve2(cvf_serve_t *s);            // returns at RESET
+#define f_ready  sv.ready
+#define f_taken  sv.taken
+#define f_rep    sv.rep
+#define f_frames sv.frames
+static volatile bool to_menu, parked;
+#else
 static const uint8_t *volatile f_ready, *volatile f_taken;
 static volatile uint8_t f_rep[3] = {0x0F, 0x03, 0x0F};
 static volatile uint32_t f_frames;
 static volatile bool to_menu, parked;
 static uint32_t t_serve;
+#endif
 static ht_unperm_t ht_u;
 
 // ---- core 1 ---------------------------------------------------------------------
 
+#ifndef CVF_SERVE2
 // the settled pins of a select, or 0 if it settles on something else
 static inline __attribute__((always_inline)) uint32_t settle_select(uint32_t in) {
     uint32_t held = 0;
@@ -98,6 +124,8 @@ static bool __scratch_x("serve") __attribute__((noinline)) on_header(uint32_t in
     return timer_hw->timerawl - t_serve > BOOT_US;
 }
 
+#endif
+
 // after RESET: handoff.asm in both halves, each settled read traced
 // (cvkernel.c's serve_traced, for a bank-indexed image), until the console
 // parks (core 0 then reboots into the menu)
@@ -126,6 +154,17 @@ static void __attribute__((noinline, noreturn)) __not_in_flash_func(serve_handof
     }
 }
 
+#ifdef CVF_SERVE2
+static void __attribute__((noreturn, noinline)) __not_in_flash_func(serve)(void) {
+    save_and_disable_interrupts();
+    sv.fixed = fixed_ram;
+    sv.t_serve = timer_hw->timerawl;
+    cvf_serve2(&sv);
+    // RESET: the handoff, from the next sample on (both headers are 55 AA)
+    to_menu = true;
+    serve_handoff();
+}
+#else
 static void __scratch_x("serve") __attribute__((noreturn, noinline)) serve(void) {
     save_and_disable_interrupts();
     t_serve = timer_hw->timerawl;
@@ -141,6 +180,7 @@ static void __scratch_x("serve") __attribute__((noreturn, noinline)) serve(void)
     to_menu = true;
     serve_handoff();
 }
+#endif
 
 // ---- core 0 -----------------------------------------------------------------------
 
@@ -153,6 +193,16 @@ void cvf_input(uint8_t *joy, uint8_t *fire, uint8_t *key) {
 }
 
 bool cvf_waiting(void) { return f_ready != 0; }
+
+void cvf_bus_counts(uint32_t *unsel, uint32_t *early, uint32_t *unhdr) {
+#ifdef CVF_SERVE2
+    *unsel = sv.unsel;
+    *early = sv.early;
+    *unhdr = sv.unhdr;
+#else
+    *unsel = *early = *unhdr = 0;
+#endif
+}
 
 bool cvf_publish(const uint8_t *list, size_t n) {
     if (f_ready || n > BANK) return false;
@@ -227,6 +277,29 @@ void cvf_note_now(void) {
     if (cvl_ok(b)) cvl_return(b, note[0] ? note : NULL);
 }
 
+// ---- back to the menu from the controllers (cvhome.h) ----------------------------------
+bool cvpad_held(uint32_t buttons) __attribute__((weak));   // cvpad.c, if the plugin has USB pads
+static cvhome_t home;
+static bool home_off, home_forced;
+static uint32_t t_home;
+
+void cvf_home(bool on) { home_off = !on; }
+
+static void home_task(uint32_t t) {
+    if (!t_home) {
+        if (home_off) return;
+        const uint8_t fire = f_rep[1], key = f_rep[2];  // controller 1, as the kernel last read it (low = pressed)
+        const bool held = cvhome_console(!(fire & 1), !(fire & 2), key) || (cvpad_held && cvpad_held(CVHOME_PAD));
+        if (!cvhome_step(&home, t, held)) return;
+        t_home = t | 1;
+        fixed_ram[bindex(CVHOME_NMI - 0x8000)] = perm_lut[0xC7];    // the next NMI restarts the BIOS
+        ht_mark(HT_Y_BOOT, t, HM_RESET, 1);
+    } else if (!home_forced && t - t_home > CVHOME_FORCE_US) {
+        home_forced = true;                 // no NMI: RST 0 wherever it runs; the header stays 55 AA
+        for (uint32_t a = 2; a < BANK; a++) fixed_ram[bindex(a)] = perm_lut[0xC7];
+    }
+}
+
 static uint32_t t_menu;
 static bool titled;
 
@@ -237,7 +310,10 @@ void cvf_task(uint32_t t) {
         ht_mark(HT_Y_RESET, t, HM_RESET, 0);
     }
     if (console_off) to_menu_now(1);
-    if (!t_menu) return;
+    if (!t_menu) {
+        if (driving) home_task(t);
+        return;
+    }
     int32_t since = (int32_t)(t - t_menu);
     if (parked) {
         ht_mark(HT_Y_RESET, t, HM_PARKED, 0);

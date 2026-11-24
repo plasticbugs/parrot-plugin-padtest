@@ -4,8 +4,11 @@
 // out here, line by line:
 //
 //    0  PAD TEST TINYUSB 0.21+     123S   which TinyUSB; seconds running
-//    1  USB ATT 3 REM 1 TASK 0.05MS       attach / remove events from the
-//                                         port and the hubs; the task's
+//    1  ATT 3 REM 1 EP 0 CH 2 0.05MS      attach / remove events from the
+//                                         port and the hubs; answers from
+//                                         the hubs' status endpoints;
+//                                         changes the port polls found
+//                                         (sdk/tinyusb hub.c); the task's
 //                                         longest run
 //    2  A1 057E:2009 1IF L41              the two newest devices: address,
 //    3  0:030000 81I01O                   VID:PID, interfaces, the length of
@@ -123,7 +126,7 @@ typedef struct {
 static udev_t devs[2];                   // [0] the newest
 static uint8_t want_daddr;              // a configuration to ask for (the control pipe was busy)
 static uint8_t cfg_buf[512] __attribute__((aligned(4)));
-static volatile uint32_t n_attach, n_remove;
+static volatile uint32_t n_attach, n_remove, n_hub_ep, n_hub_change;
 
 static udev_t *dev_of(uint8_t daddr) {
     for (int i = 0; i < 2; i++)
@@ -188,6 +191,31 @@ void tuh_umount_cb(uint8_t daddr) {
     udev_t *d = dev_of(daddr);
     if (d) d->daddr = 0;
     if (want_daddr == daddr) want_daddr = 0;
+}
+
+// the hub's start (sdk/tinyusb hub.c): how many ports and the wait, then each port's status and change bits
+// (status bit 0: a device is there; change bit 0: its connection changed)
+void tuh_hub_scan_cb(uint8_t daddr, uint8_t port, uint16_t status, uint16_t change) {
+    if (port == 0) logf_("HUB A%u %u PORTS, WAIT %uMS", daddr, status, change);
+    else if (status == 0xFFFF && change == 0xFFFF) logf_("HUB A%u P%u NO ANSWER", daddr, port);
+    else logf_("HUB A%u P%u %04X %04X%s", daddr, port, status, change, status & 1 ? " DEVICE" : "");
+}
+
+// what the hubs' status endpoints and port polls see (sdk/tinyusb hub.c says what each is)
+void tuh_hub_diag_cb(uint8_t daddr, uint8_t what, uint32_t value) {
+    switch (what) {
+    case 1:
+        if (n_hub_ep == 0) logf_("HUB A%u ENDPOINT ANSWERS %02X R%lu", daddr, (unsigned)(value & 0xFF),
+                                 (unsigned long)(value >> 8));
+        n_hub_ep = n_hub_ep + 1;
+        break;
+    case 2:
+        n_hub_change = n_hub_change + 1;
+        logf_("HUB A%u P%lu CHANGE %04lX", daddr, (unsigned long)(value >> 16), (unsigned long)(value & 0xFFFF));
+        break;
+    case 3: logf_("HUB A%u ENDPOINT NOT ARMED %lu", daddr, (unsigned long)value); break;
+    case 4: logf_("HUB A%u CHANGE DROPPED", daddr); break;
+    }
 }
 
 void tuh_event_hook_cb(uint8_t rhport, uint32_t eventid, bool in_isr) {
@@ -284,8 +312,8 @@ static void rows(uint32_t t) {
     }
     const uint32_t us = cvpad_task_max_us();
     rowf(0, C_LRED, "PAD TEST TINYUSB %-6s %6luS", PADDIAG_TUSB, (unsigned long)(t / 1000000));
-    rowf(1, C_WHITE, "USB ATT %lu REM %lu TASK %lu.%02luMS", (unsigned long)n_attach, (unsigned long)n_remove,
-         (unsigned long)(us / 1000), (unsigned long)(us / 10 % 100));
+    rowf(1, C_WHITE, "ATT %lu REM %lu EP %lu CH %lu %lu.%02luMS", (unsigned long)n_attach, (unsigned long)n_remove,
+         (unsigned long)n_hub_ep, (unsigned long)n_hub_change, (unsigned long)(us / 1000), (unsigned long)(us / 10 % 100));
     for (int k = 0; k < 2; k++) {
         const uint32_t irq = save_and_disable_interrupts();
         const udev_t d = devs[k];

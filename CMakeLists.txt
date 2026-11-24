@@ -32,8 +32,8 @@ include(${PARROTCART_SDK}/sdk/cvplugin.cmake)
 
 # The same source makes the same file, whenever it's built: the compiler's
 # __DATE__ and __TIME__ (the build date in the binary info) come from
-# SOURCE_DATE_EPOCH, fixed here at the tested build's, 2026-11-15 19:28:57 UTC.
-set(BUILD_EPOCH 1794770937)
+# SOURCE_DATE_EPOCH, fixed here at the build's day, 2026-11-23.
+set(BUILD_EPOCH 1795435200)
 set(CMAKE_C_COMPILER_LAUNCHER ${CMAKE_COMMAND} -E env SOURCE_DATE_EPOCH=${BUILD_EPOCH})
 set(CMAKE_CXX_COMPILER_LAUNCHER ${CMAKE_COMMAND} -E env SOURCE_DATE_EPOCH=${BUILD_EPOCH})
 
@@ -64,5 +64,5 @@ target_compile_definitions(paddiag PRIVATE PICO_PANIC_FUNCTION=paddiag_panic)
 target_include_directories(paddiag PRIVATE ${PARROTCART_SDK}/sdk/cvpad_tusb)
 pico_enable_stdio_usb(paddiag 0)
 pico_enable_stdio_uart(paddiag 0)
-cvcart_plugin(paddiag ID ${PADDIAG_ID} NAME ${PADDIAG_NAME} VERSION 0.1.2 BY "Parrot Cart"
+cvcart_plugin(paddiag ID ${PADDIAG_ID} NAME ${PADDIAG_NAME} VERSION 0.1.6 BY "Parrot Cart"
               USES usb-host ICON src/paddiag_icon.txt FILE ${PADDIAG_FILE} README CART-README.md)

@@ -1,4 +1,9 @@
-commit b766ee3
-date   2026-11-17T02:05:18-08:00
-about  Pin order in hw3/pins.py, so the public SDK needn't carry the netlist
-copied 2026-11-17T07:12:03Z by tools/update-sdk.sh
+commit 437421e9f04afbd488006acb9b3a2a114fc1ae8c
+date   2026-11-21T17:43:25-08:00
+about  sdk/tinyusb hub: read each port every 100 ms, as a GL3523 never reports a change; Pad Test 0.1.5
+copied 2026-11-23 by tools/update-sdk.sh
+
+also: back to the menu from the controllers (both fire buttons and * or
+a USB pad's Select and Start held for 2 s), in cvhome.h, cvkernel.c/.h,
+cvframes.c/.h and cvpad.c/.h, added by tools/add-home.py from the plugin
+template (https://github.com/plasticbugs/parrot-plugin-template)
